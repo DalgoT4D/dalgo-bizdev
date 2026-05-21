@@ -1,0 +1,17 @@
+.claude/agent-memory
+# Symlinks to sibling repos (local only)
+DDP_backend
+webapp_v2
+
+# mac stuff
+.DS_Store
+.claude/.DS_Store
+
+# obsidian
+.obsidian/
+# Google service account keys and other secrets
+secrets/
+
+# Bizdev config — contains Sheet ID and service account path
+workdocs/bizdev/districts.json
+workdocs/bizdev/
