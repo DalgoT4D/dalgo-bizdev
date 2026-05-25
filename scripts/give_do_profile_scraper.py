@@ -78,6 +78,18 @@ INDIA_STATES = [
     "West Bengal",
 ]
 
+def _normalise(name: str) -> str:
+    """Lowercase, strip &, replace hyphens/extra spaces — for fuzzy state matching."""
+    return re.sub(r"\s+", " ", name.lower().replace("&", "").replace("-", " ")).strip()
+
+_STATE_NORM: dict[str, str] = {_normalise(s): s for s in INDIA_STATES}
+
+
+def _class_to_state(suffix: str) -> str | None:
+    """Convert Highcharts class suffix 'tamil-nadu' → canonical 'Tamil Nadu'."""
+    return _STATE_NORM.get(_normalise(suffix))
+
+
 RESEARCH_TAB = "NGO Research"
 
 RESEARCH_HEADER = (
@@ -148,12 +160,14 @@ def lookup_from_combined(
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
 
-    try:
-        ws = sh.worksheet("Combined")
-    except gspread.WorksheetNotFound:
+    combined_ws = next(
+        (ws for ws in sh.worksheets() if ws.title.lower() == "combined"), None
+    )
+    if combined_ws is None:
         print("❌  'Combined' tab not found in scraper sheet.")
         print("   Run the district scraper first: bash scripts/run_scraper.sh")
         return {}
+    ws = combined_ws
 
     records = ws.get_all_values()
     if not records:
@@ -163,7 +177,7 @@ def lookup_from_combined(
     try:
         name_col = header.index("ngo name")
         url_col  = header.index("profile url")
-        rev_col  = header.index("total revenue (fy) ₹")
+        rev_col  = next(i for i, h in enumerate(header) if h.startswith("total revenue"))
     except ValueError as e:
         print(f"❌  Combined tab is missing expected column: {e}")
         return {}
@@ -214,16 +228,24 @@ def _section(soup: BeautifulSoup, h2_text: str):
 
 
 def _extract_website(soup: BeautifulSoup) -> str:
-    """First external link (not give.do) on the page."""
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if href.startswith("http") and "give.do" not in href:
-            return href
+    """Org website from the dedicated 'Website' section (h2 + detailstabfield)."""
+    for h2 in soup.find_all("h2"):
+        if h2.get_text(strip=True) == "Website":
+            for sib in h2.parent.find_all_next("div", class_="detailstabfield"):
+                a = sib.find("a", class_="text-red")
+                if a and a.get("href", "").startswith("http"):
+                    return a["href"].strip()
     return ""
 
 
 def _extract_overview(soup: BeautifulSoup) -> str:
-    """Mission/about text — first <p> immediately after the <h1>."""
+    """Org vision/mission from <div class='vision-mission-content'>."""
+    div = soup.find("div", class_="vision-mission-content")
+    if div:
+        p = div.find("p")
+        if p:
+            return p.get_text(strip=True)
+    # Fallback: first <p> after <h1>
     h1 = soup.find("h1")
     if h1:
         p = h1.find_next_sibling("p")
@@ -233,64 +255,108 @@ def _extract_overview(soup: BeautifulSoup) -> str:
 
 
 def _extract_hq_city(soup: BeautifulSoup) -> str:
-    """Extract city from '<p>Headquarters: City, State</p>'."""
-    for p in soup.find_all("p"):
-        text = p.get_text(strip=True)
-        if text.startswith("Headquarters:"):
-            _, _, location = text.partition(":")
-            city = location.strip().split(",")[0].strip()
-            return city
+    """Extract city from <p class='office-address'> — city is second-to-last comma token."""
+    p = soup.find("p", class_="office-address")
+    if p:
+        parts = [x.strip() for x in p.get_text(separator=" ").split(",") if x.strip()]
+        if len(parts) >= 2:
+            return parts[-2]
+    # Fallback: span containing "Headquarters" → next <p>
+    for span in soup.find_all("span"):
+        if "Headquarters" in span.get_text():
+            p = span.find_next("p")
+            if p:
+                parts = [x.strip() for x in p.get_text().split(",") if x.strip()]
+                if len(parts) >= 2:
+                    return parts[-2]
     return ""
 
 
 def _extract_program_names(soup: BeautifulSoup) -> list[str]:
-    """Program names from <h3> tags inside the Programs section."""
-    sec = _section(soup, "Programs")
-    if sec:
-        names = [h3.get_text(strip=True) for h3 in sec.find_all("h3")]
-        if names:
-            return names
-    # Fallback: any <h3> in the page (give.do uses h3 only for programs)
-    return [h3.get_text(strip=True) for h3 in soup.find_all("h3") if h3.get_text(strip=True)]
+    """Program names from accordionHeading <h3> tags inside <div id='programs'>."""
+    programs_div = soup.find("div", id="programs")
+    if programs_div:
+        return [
+            h3.get_text(strip=True)
+            for li in programs_div.find_all("li", class_="accordion_elem")
+            for h3 in li.find_all("h3", class_="accordionHeading")
+            if h3.get_text(strip=True)
+        ]
+    # Fallback: accordionHeading anywhere on page
+    return [h3.get_text(strip=True) for h3 in soup.find_all("h3", class_="accordionHeading") if h3.get_text(strip=True)]
 
 
 def _extract_cause_areas(soup: BeautifulSoup) -> list[str]:
-    """All cause areas via /discover/sector/ links (deduplicated, order-preserved)."""
+    """Primary cause areas via badge-link anchors pointing to /discover/sector/."""
     areas = []
-    for a in soup.find_all("a", href=re.compile(r"/discover/sector/")):
-        text = a.get_text(strip=True)
-        if text:
-            areas.append(text)
+    for a in soup.find_all("a", class_="badge-link"):
+        if "/discover/sector/" in a.get("href", ""):
+            badge = a.find("span", class_="badge")
+            text = badge.get_text(strip=True) if badge else a.get_text(strip=True)
+            if text:
+                areas.append(text)
     return list(dict.fromkeys(areas))
 
 
-def _extract_operational_states(soup: BeautifulSoup) -> list[str]:
-    """All operational states via /discover/state/ links (deduplicated)."""
-    states = []
-    for a in soup.find_all("a", href=re.compile(r"/discover/state/")):
-        text = a.get_text(strip=True)
-        if text:
-            states.append(text)
+def _extract_operational_states(url: str) -> list[str]:
+    """
+    Render the page with Playwright and extract operational states from the
+    Highcharts SVG map.  Operational states have class 'highcharts-point' but
+    NOT 'highcharts-null-point'; the state name is encoded in 'highcharts-name-*'.
+    """
+    from playwright.sync_api import sync_playwright
+
+    states: list[str] = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page()
+        try:
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_selector(".highcharts-point", timeout=10000)
+            elements = page.query_selector_all(
+                ".highcharts-point:not(.highcharts-null-point)"
+            )
+            for el in elements:
+                class_attr = el.get_attribute("class") or ""
+                for cls in class_attr.split():
+                    if cls.startswith("highcharts-name-"):
+                        suffix = cls[len("highcharts-name-"):]
+                        state = _class_to_state(suffix)
+                        if state:
+                            states.append(state)
+                        break
+        except Exception as exc:
+            print(f"   ⚠  State extraction failed: {exc}")
+        finally:
+            browser.close()
+
     return list(dict.fromkeys(states))
 
 
 def _extract_leadership(soup: BeautifulSoup) -> list[dict]:
     """
-    Parse <p> tags matching "Name - Role" pattern.
+    Leaders from <ul class='tab-inner__team tab-row'> — each <li> has:
+      <div class='tab-inner__info--name'>Name <a class='tab-inner__info--link'>...</a></div>
+      <p>Role</p>
     Returns up to 3 dicts with keys: name, role, linkedin.
     """
     leaders: list[dict] = []
-    for p in soup.find_all("p"):
-        text = p.get_text(strip=True)
-        if " - " not in text or len(text) > 120:
+    ul = soup.find("ul", class_=lambda c: c and "tab-inner__team" in c)
+    if not ul:
+        return leaders
+    for li in ul.find_all("li"):
+        name_div = li.find("div", class_="tab-inner__info--name")
+        if not name_div:
             continue
-        parts = text.split(" - ", 1)
-        name, role = parts[0].strip(), parts[1].strip()
-        if not name or not role:
-            continue
-        linkedin_a = p.find("a", href=re.compile(r"linkedin\.com/in/", re.I))
+        linkedin_a = name_div.find("a", class_="tab-inner__info--link")
         linkedin = linkedin_a["href"].strip() if linkedin_a else ""
-        leaders.append({"name": name, "role": role, "linkedin": linkedin})
+        if linkedin_a:
+            linkedin_a.decompose()
+        name = name_div.get_text(strip=True)
+        role_p = name_div.find_next_sibling("p")
+        role = role_p.get_text(strip=True) if role_p else ""
+        if name:
+            leaders.append({"name": name, "role": role, "linkedin": linkedin})
         if len(leaders) == 3:
             break
     return leaders
@@ -305,7 +371,7 @@ def scrape_profile(url: str) -> dict:
         "hq_city":    _extract_hq_city(soup),
         "programs":   _extract_program_names(soup),
         "causes":     _extract_cause_areas(soup),
-        "states":     _extract_operational_states(soup),
+        "states":     _extract_operational_states(url),
         "leadership": _extract_leadership(soup),
     }
 

@@ -39,15 +39,25 @@ Read `workdocs/bizdev/districts.json` and confirm:
 
 If anything is missing, stop and tell the user to run `/bizdev-setup`.
 
-### 2. Confirm Combined tab exists
+### 2. Ensure Combined tab exists
 
-The scraper sheet must have a **Combined** tab (produced by running all districts).
-If it's absent, stop and tell the user:
+Run the dedicated check script:
+
+```bash
+python3 scripts/check_combined_tab.py
+```
+
+If it exits 0, continue. If it exits 1 (Combined tab absent), prompt the user:
 
 ```
-❌ Combined tab not found. Run the district scraper first:
-   bash scripts/run_scraper.sh
+❌ Combined tab not found in the scraper sheet.
+
+The district scraper needs to run first to populate the Combined tab.
+Run it now?  [Y/n]  bash scripts/run_scraper.sh
 ```
+
+Wait for the user's confirmation before proceeding. If they decline, stop and explain that
+the Combined tab is required to look up NGO profile URLs.
 
 ### 3. Run the profile scraper
 
