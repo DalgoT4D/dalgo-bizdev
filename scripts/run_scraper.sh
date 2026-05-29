@@ -30,10 +30,15 @@ echo "   $(python3 --version) ✓"
 echo ""
 
 # ── 2. Install dependencies ────────────────────────────────
-echo "▶  Installing dependencies..."
-python3 -m pip install -q --upgrade pip
-python3 -m pip install -q -r give_do_requirements.txt
-echo "   Dependencies ready ✓"
+echo "▶  Checking dependencies..."
+if python3 -c "import requests, bs4, lxml, gspread, google.auth, playwright" 2>/dev/null; then
+  echo "   Dependencies ready ✓"
+else
+  echo "▶  Installing dependencies..."
+  python3 -m pip install -q -r give_do_requirements.txt || \
+    python3 -m pip install -q --break-system-packages -r give_do_requirements.txt
+  echo "   Dependencies ready ✓"
+fi
 echo ""
 
 # ── 3. Check required files ────────────────────────────────

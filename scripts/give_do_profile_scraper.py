@@ -79,14 +79,23 @@ INDIA_STATES = [
 ]
 
 def _normalise(name: str) -> str:
-    """Lowercase, strip &, replace hyphens/extra spaces — for fuzzy state matching."""
-    return re.sub(r"\s+", " ", name.lower().replace("&", "").replace("-", " ")).strip()
+    """Lowercase, strip both '&' and standalone 'and', collapse spaces — for state matching."""
+    s = name.lower().replace("&", " ").replace("-", " ")
+    s = re.sub(r"\band\b", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 _STATE_NORM: dict[str, str] = {_normalise(s): s for s in INDIA_STATES}
+
+_HIGHCHARTS_OVERRIDES: dict[str, str] = {
+    "nct-of-delhi":        "Delhi",
+    "andaman-and-nicobar": "Andaman & Nicobar Islands",
+}
 
 
 def _class_to_state(suffix: str) -> str | None:
     """Convert Highcharts class suffix 'tamil-nadu' → canonical 'Tamil Nadu'."""
+    if suffix in _HIGHCHARTS_OVERRIDES:
+        return _HIGHCHARTS_OVERRIDES[suffix]
     return _STATE_NORM.get(_normalise(suffix))
 
 
@@ -311,8 +320,8 @@ def _extract_operational_states(url: str) -> list[str]:
         browser = pw.chromium.launch(headless=True)
         page = browser.new_page()
         try:
-            page.goto(url, wait_until="networkidle", timeout=30000)
-            page.wait_for_selector(".highcharts-point", timeout=10000)
+            page.goto(url, wait_until="load", timeout=30000)
+            page.wait_for_selector("[class*='highcharts-name-']", timeout=15000)
             elements = page.query_selector_all(
                 ".highcharts-point:not(.highcharts-null-point)"
             )

@@ -16,7 +16,9 @@ Examples:
 Appends a new row per NGO into the **"NGO Research"** tab of the research Google Sheet
 configured in `workdocs/bizdev/districts.json`.
 
-**Rows are never overwritten.** If an NGO already has a row, it is silently skipped.
+**Rows are not overwritten by default.** If an NGO already has a row, its current data is
+shown and you are asked whether to refresh it. Refreshing re-scrapes the give.do profile
+and replaces the existing row.
 
 Columns written (62 total):
 
@@ -59,9 +61,54 @@ Run it now?  [Y/n]  bash scripts/run_scraper.sh
 Wait for the user's confirmation before proceeding. If they decline, stop and explain that
 the Combined tab is required to look up NGO profile URLs.
 
-### 3. Run the profile scraper
+### 3. Check for existing rows
 
-Pass all NGO names as separate positional arguments:
+Before running the scraper, fetch all rows currently in the "NGO Research" tab:
+
+```bash
+python3 scripts/fetch_research_rows.py
+```
+
+Parse the JSON output (case-insensitive name match) to find which input NGOs already have
+rows. If none of the input NGOs exist in the sheet, skip to Step 4.
+
+**For each NGO that already has a row**, display its current data:
+
+```
+Already in sheet:
+  — <NGO Name>
+      Website:  <Org Website>
+      HQ City:  <HQ City>
+      Causes:   <[Cause] cols where value == "TRUE", comma-joined>
+      States:   <count of [State] cols where value == "TRUE"> state(s)
+      Programs: <count of comma-separated values in Programs col> program(s)
+      Leaders:  <Leader 1 Name (Leader 1 Role), Leader 2 Name (Leader 2 Role), ...>
+```
+
+Then use `AskUserQuestion` with a **multi-select** question:
+
+> These NGOs already have research rows. Select any you want to refresh (re-scrape and overwrite):
+
+- One option per existing NGO (label = NGO name, description = "Re-scrape and overwrite existing data")
+- Plus an option: **"Keep all / don't refresh"** (description = "Leave existing rows unchanged")
+
+**Default is to keep** — do not refresh unless the user explicitly selects an NGO name.
+
+**If the user selects NGOs to refresh**, delete their rows before running the scraper:
+
+```bash
+python3 scripts/delete_research_rows.py "NGO Name A" "NGO Name B"
+```
+
+Track which NGOs are:
+- **to_scrape** — new NGOs (no existing row) + confirmed refreshes (row just deleted)
+- **kept** — existing-row NGOs the user did not select for refresh
+
+If `to_scrape` is empty, skip Step 4 and go directly to Step 5.
+
+### 4. Run the profile scraper
+
+Pass only the `to_scrape` NGOs as positional arguments:
 
 ```bash
 python3 scripts/give_do_profile_scraper.py "NGO Name 1" "NGO Name 2" ...
@@ -78,14 +125,13 @@ The script will:
    - **Operational states** — matched against all 36 states/UTs; flagged `TRUE`
    - **Leadership** — up to 3 leaders with name, role, and LinkedIn URL
 3. Append a row to the "NGO Research" tab (creates the tab with headers if absent).
-   Skip any NGO that already has a row.
 
-### 4. Report the result
+### 5. Report the result
 
-After the script exits, summarise for the user:
+Combine results from Steps 3 and 4 and summarise:
 
 ```
-Research complete — X added, Y skipped, Z not found
+Research complete — X added, Y refreshed, Z kept, W not found
 
 Added:
   ✓ <NGO Name>
@@ -96,8 +142,23 @@ Added:
       Programs: <N> program(s)
       Leaders:  <Name (Role), ...>
 
-Skipped (already in sheet):
+Refreshed:
+  ↺ <NGO Name>
+      Website:  <url>
+      HQ City:  <city>
+      Causes:   <matched cause areas>
+      States:   <N> state(s)
+      Programs: <N> program(s)
+      Leaders:  <Name (Role), ...>
+
+Kept (not refreshed):
   — <NGO Name>
+      Website:  <from existing row>
+      HQ City:  <from existing row>
+      Causes:   <from existing row>
+      States:   <N> state(s)
+      Programs: <N> program(s)
+      Leaders:  <Name (Role), ...>
 
 Not found in Combined tab (run scraper first):
   ⚠ <NGO Name>
