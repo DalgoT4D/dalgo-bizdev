@@ -48,7 +48,9 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
 }
 
-DELAY_S = 1.2   # polite pause between page requests
+DELAY_S = 1.2        # polite pause between page requests
+MAX_RETRIES = 3
+RETRY_BACKOFF = 2    # seconds; doubles each attempt
 
 # Profile link pattern: /discover/SHORTCODE/slug/
 _PROFILE_RE = re.compile(r"^/discover/[A-Za-z0-9]+/[^/]+/$")
@@ -76,9 +78,23 @@ def load_config() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def fetch_soup(url: str) -> BeautifulSoup:
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    return BeautifulSoup(resp.text, "lxml")
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                return BeautifulSoup(resp.text, "lxml")
+            raise requests.exceptions.HTTPError(
+                f"HTTP {resp.status_code}", response=resp
+            )
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF * (2 ** (attempt - 1))
+                print(f"   ⚠  Attempt {attempt} failed ({exc}). Retrying in {wait}s …")
+                time.sleep(wait)
+    raise last_exc  # type: ignore[misc]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -156,7 +172,7 @@ def extract_cards(soup: BeautifulSoup) -> list[dict]:
 
 def _empty_row(name: str, url: str) -> dict:
     return {"name": name, "location": "N/A", "fy_year": "N/A",
-            "revenue": "N/A", "url": url}
+            "revenue": None, "url": url}
 
 
 def _extract_location(lines: list[str], ngo_name: str) -> str:
@@ -181,23 +197,21 @@ def _extract_fy_year(lines: list[str]) -> str:
     return "N/A"
 
 
-def _extract_revenue(lines: list[str]) -> str:
+def _extract_revenue(lines: list[str]) -> int | None:
     for i, ln in enumerate(lines):
         if ln == "Total Revenue":
             for j in range(i + 1, min(i + 4, len(lines))):
                 val = lines[j].strip()
                 if not val:
                     continue
-                if val == "--":
-                    return "N/A"
-                if val in ("₹ None", "₹None"):
-                    return "N/A"
+                if val in ("--", "₹ None", "₹None"):
+                    return None
                 num_str = re.sub(r"[₹\s,]", "", val)
                 if num_str.isdigit():
-                    return f"₹{int(num_str):,}"
-                return val
+                    return int(num_str)
+                return None
             break
-    return "N/A"
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -251,18 +265,28 @@ def write_to_sheet(
         ws = sh.worksheet(tab_name)
         ws.clear()
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=tab_name, rows=5000, cols=10)
-        print(f"   Created new tab: '{tab_name}'")
+        try:
+            ws = sh.add_worksheet(title=tab_name, rows=5000, cols=10)
+            print(f"   Created new tab: '{tab_name}'")
+        except gspread.exceptions.APIError as e:
+            if "already exists" in str(e):
+                sh.fetch_sheet_metadata()
+                ws = sh.worksheet(tab_name)
+                ws.clear()
+            else:
+                raise
 
     scraped_at  = time.strftime("%Y-%m-%d %H:%M:%S")
     total_label = str(total_count) if total_count > 0 else "N/A"
 
-    header = [["NGO Name", "HQ Location", "FY Year", "Total Revenue (FY)",
+    header = [["NGO Name", "HQ Location", "FY Year", "Total Revenue (FY) ₹",
                "Profile URL", "Scraped At", "give.do Total Count"]]
 
     rows = [
         [
-            d["name"], d["location"], d["fy_year"], d["revenue"], d["url"],
+            d["name"], d["location"], d["fy_year"],
+            d["revenue"] if d["revenue"] is not None else "",
+            d["url"],
             scraped_at  if i == 0 else "",
             total_label if i == 0 else "",
         ]
@@ -293,16 +317,18 @@ def main():
     )
     args = parser.parse_args()
 
+    if bool(args.url) != bool(args.tab):
+        parser.error("--url and --tab must be supplied together")
+
     config = load_config()
     sheet_id = config["sheet_id"]
     sa_file  = str(HERE / config["service_account_file"])
 
     # ── Mode 1: one-off URL (no config entry needed) ──
     if args.url:
-        tab = args.tab or args.url.rstrip("/").split("/")[-1]
-        data, total = scrape_district(args.url, tab)
+        data, total = scrape_district(args.url, args.tab)
         if data:
-            write_to_sheet(data, total, sheet_id, tab, sa_file)
+            write_to_sheet(data, total, sheet_id, args.tab, sa_file)
         return
 
     # ── Mode 2: single district from config ──────────
@@ -323,10 +349,24 @@ def main():
     print(f"  give.do Scraper — {len(districts)} district(s)")
     print(f"{'='*50}")
 
+    all_district_data: list[dict] = []
+
     for d in districts:
         data, total = scrape_district(d["url"], d["name"])
         if data:
             write_to_sheet(data, total, sheet_id, d["tab"], sa_file)
+            all_district_data.extend(data)
+
+    if len(districts) > 1 and all_district_data:
+        seen_urls: set[str] = set()
+        combined: list[dict] = []
+        for row in all_district_data:
+            key = row["url"].lower()
+            if key not in seen_urls:
+                seen_urls.add(key)
+                combined.append(row)
+        print(f"\n🔗  Combined: {len(combined)} unique NGOs across {len(districts)} districts")
+        write_to_sheet(combined, len(combined), sheet_id, "Combined", sa_file)
 
     print(f"\n🎉  All done!")
     print(f"   Sheet: https://docs.google.com/spreadsheets/d/{sheet_id}/")

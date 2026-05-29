@@ -26,7 +26,7 @@ Scripts and commands for scraping give.do district listings and researching NGO 
 | `scripts/run_scraper.sh` | One-click runner — checks deps, then runs the district scraper |
 | `scripts/give_do_requirements.txt` | Python dependencies for both scraper scripts |
 | `workdocs/bizdev/districts.json` | Registered districts, scraper sheet ID, research sheet ID, and service account path |
-| `secrets/dalgo-demo-jaffle-shop-05f08cd333e2.json` | Google service account key (gitignored) |
+| `secrets/<key>.json` | Google service account key (gitignored) |
 
 ### Bizdev Commands
 
