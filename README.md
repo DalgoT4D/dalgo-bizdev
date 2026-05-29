@@ -1,122 +1,98 @@
 # Dalgo Bizdev — NGO Prospecting Pipeline
 
-This repo contains the tools we use to discover and research NGO prospects from [give.do](https://give.do).
+This tool helps you find and research NGOs listed on [give.do](https://give.do). It pulls structured data into two Google Sheets that you own: a **Discovery Sheet** with thousands of NGOs across cities, and a **Research Sheet** with deep profiles of the NGOs you want to evaluate.
 
-The pipeline has two steps:
-
-1. **Scrape** — pull a list of NGOs from give.do city pages into a Google Sheet
-2. **Research** — deep-dive individual NGOs and log structured profiles into a second sheet
-
-Both steps are run as simple commands inside Claude Code. No coding required.
+> **You'll need:** Claude Code installed, and a Google account to connect your sheets.
 
 ---
 
-## What You Get
+## First-Time Setup
 
-### Scraper Sheet (step 1)
-One tab per registered city, plus a **Combined** tab that deduplicates NGOs across all cities.
+Setup takes about 5 minutes and only needs to be done once.
 
-Each row has:
-- NGO Name
-- HQ Location
-- Financial Year
-- Total Revenue (₹, as a number — filterable)
-- Profile URL on give.do
+1. Open this folder in Claude Code
+2. Create two blank Google Sheets in your Google Drive — one for discovery, one for research (you can name them anything)
+3. Run `/bizdev-setup` in Claude Code — it will ask for your sheet links and handle everything else
+4. Once setup completes, run `/bizdev/scraping/refresh-source` to do your first data pull
 
-### NGO Research Sheet (step 2)
-A single **NGO Research** tab. Each row is one deeply researched NGO.
-
-Each row has:
-- Name, give.do profile URL, organisation website, HQ city
-- Overview (mission statement)
-- Programs (all program names, comma-separated)
-- **10 cause area columns** — `TRUE` if the NGO works in that area (Education, Health, Child & Youth Development, Livelihoods, Skill Development, Gender, Energy & Environment, Food & Nutrition, Human Rights, Disaster Management)
-- **36 state columns** — `TRUE` for each state where the NGO operates
-- Budget ₹ (Total Revenue from the scraper sheet)
-- Leader 1, Leader 2, Leader 3 — Name, Role, LinkedIn for up to 3 leaders
-
-The cause area and state columns make it easy to filter in Google Sheets — e.g. "show me all NGOs working in Education in Maharashtra."
+Your configuration is stored locally on your machine and is never shared with others.
 
 ---
 
-## How to Use
+## Day-to-Day Usage
 
-All commands are run inside Claude Code. Type the command and Claude handles the rest.
-
-### Step 1 — Refresh the NGO list
+### Step 1 — Build your NGO discovery list
 
 ```
 /bizdev/scraping/refresh-source
 ```
 
-Scrapes all registered cities from give.do and updates the scraper sheet. Also writes the Combined tab (deduplicated). Run this whenever you want fresh data — it replaces the existing city tabs.
+Claude will scrape give.do for every city you've configured and populate your Discovery Sheet. This takes 15–20 minutes per run. When it finishes, open your Discovery Sheet and look at the **Combined** tab — it has all NGOs across all your cities, deduplicated.
 
----
+To add a new city to your list:
+
+```
+/bizdev/scraping/add-district <City Name>
+```
 
 ### Step 2 — Research specific NGOs
 
+Once you've spotted NGOs worth evaluating in the Combined tab, run:
+
 ```
 /bizdev/research/research-ngo "NGO Name"
-/bizdev/research/research-ngo "NGO A" "NGO B" "NGO C"
 ```
 
-Looks up each NGO in the Combined tab, fetches its give.do profile, and adds a row to the NGO Research sheet. Use the name exactly as it appears in the scraper sheet.
+You can pass multiple names at once:
 
-If an NGO already has a row in the research sheet, it is skipped — existing data is never overwritten.
-
-**Example:**
 ```
 /bizdev/research/research-ngo "Bosconet" "Pallium India" "Goonj"
 ```
 
----
-
-### Add a new city
-
-```
-/bizdev/scraping/add-district <CityName>
-```
-
-Validates the city on give.do and registers it so future `/refresh-source` runs include it.
+Use the name exactly as it appears in the Combined tab. Claude will fetch each NGO's full give.do profile and add a row to your Research Sheet. If an NGO is already in the sheet, it's skipped — you can safely re-run without duplicating data.
 
 ---
 
-## File Structure
+## What the Sheets Contain
 
-```
-scripts/
-  give_do_scraper.py          District listing scraper (step 1)
-  give_do_profile_scraper.py  NGO profile researcher (step 2)
-  run_scraper.sh              Shell wrapper for the listing scraper
-  give_do_requirements.txt    Python dependencies
+### Discovery Sheet
 
-workdocs/bizdev/
-  districts.json              Registered cities + sheet IDs (not committed to git)
+| Column | What it is |
+|--------|-----------|
+| NGO Name | Name as listed on give.do |
+| HQ Location | City or region |
+| FY Year | Financial year of the revenue figure |
+| Total Revenue ₹ | Annual revenue (number, filterable) |
+| Profile URL | Direct link to their give.do page |
 
-secrets/
-  <key>.json                  Google service account key (not committed to git)
+One tab per city you've added, plus a **Combined** tab that merges and deduplicates everything.
 
-.claude/commands/bizdev/
-  scraping/refresh-source.md  Command definition for step 1
-  scraping/add-district.md    Command definition for adding a city
-  research/research-ngo.md    Command definition for step 2
-```
+### Research Sheet (NGO Research tab)
 
----
+| Column group | What it is |
+|---|---|
+| Name, Profile URL, Website | Identity and links |
+| HQ City, Overview | Location and mission statement |
+| Programs | All program names, comma-separated |
+| Cause area columns | One column per sector (Education, Health, Child & Youth Development, etc.) — ticked `TRUE` if the NGO works in that area |
+| State columns | One column per Indian state — ticked `TRUE` if the NGO operates there |
+| Budget ₹ | Annual revenue pulled from the discovery data |
+| Leader 1–3 | Name, role, and LinkedIn for up to 3 leaders |
 
-## Setup (one-time)
-
-1. Make sure `workdocs/bizdev/districts.json` exists with:
-   - `sheet_id` — the scraper Google Sheet ID
-   - `research_sheet_id` — the NGO Research Google Sheet ID
-   - `service_account_file` — path to the service account key under `secrets/`
-
-2. Both Google Sheets must be shared with the service account email (Editor access).
-
-3. Run `/bizdev-setup` inside Claude Code if starting from scratch — it walks through the full setup.
+The ticked columns make filtering easy — for example, you can instantly filter for NGOs working in **Education** in **Maharashtra**.
 
 ---
 
-## Registered Cities
+## What's in This Folder
 
-Currently scraping: **Bangalore, Delhi, Mumbai, Chennai, Pune, Hyderabad, Kolkata, Ahmedabad, Lucknow, Jaipur, Thiruvananthapuram** (11 cities, ~3,100 unique NGOs in Combined tab).
+- **scripts/** — the automation behind both commands. No need to touch these.
+- **workdocs/bizdev/** — your personal configuration, created during setup. Not committed to git.
+- **secrets/** — your Google connection key, also created during setup. Never share this file.
+
+---
+
+## Cities
+
+You start with no cities configured. Cities are added during `/bizdev-setup` or anytime with `/bizdev/scraping/add-district`.
+
+Some cities that work well with give.do: Bangalore, Delhi, Mumbai, Chennai, Pune, Hyderabad, Kolkata, Ahmedabad, Lucknow, Jaipur, Thiruvananthapuram.
